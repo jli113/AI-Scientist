@@ -92,15 +92,15 @@ def get_available_gpus(gpu_ids=None):
 
 
 def worker(
-        queue,
-        base_dir,
-        results_dir,
-        model,
-        client,
-        client_model,
-        writeup,
-        improvement,
-        gpu_id,
+    queue,
+    base_dir,
+    results_dir,
+    model,
+    client,
+    client_model,
+    writeup,
+    improvement,
+    gpu_id,
 ):
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     print(f"Worker {gpu_id} started.")
@@ -124,15 +124,15 @@ def worker(
 
 
 def do_idea(
-        base_dir,
-        results_dir,
-        idea,
-        model,
-        client,
-        client_model,
-        writeup,
-        improvement,
-        log_file=False,
+    base_dir,
+    results_dir,
+    idea,
+    model,
+    client,
+    client_model,
+    writeup,
+    improvement,
+    log_file=False,
 ):
     ## CREATE PROJECT FOLDER
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -168,7 +168,9 @@ def do_idea(
         io = InputOutput(
             yes=True, chat_history_file=f"{folder_name}/{idea_name}_aider.txt"
         )
-        if model == "deepseek-coder-v2-0724":
+        if model == "hybrid":
+            main_model = Model("claude-3-5-sonnet-20240620")
+        elif model == "deepseek-coder-v2-0724":
             main_model = Model("deepseek/deepseek-coder")
         elif model == "llama3.1-405b":
             main_model = Model("openrouter/meta-llama/llama-3.1-405b-instruct")
@@ -200,8 +202,34 @@ def do_idea(
         print(f"*Starting Writeup*")
         ## PERFORM WRITEUP
         if writeup == "latex":
-            writeup_file = osp.join(folder_name, "latex", "template.tex")
-            fnames = [exp_file, writeup_file, notes]
+            writeup_file = osp.join(folder_name, "latex", "template_segments.tex")
+            TITLE_file = osp.join(folder_name, "latex", "TITLE_HERE.tex")
+            ABSTRACT_file = osp.join(folder_name, "latex", "ABSTRACT_HERE.tex")
+
+            INTRO_file = osp.join(folder_name, "latex", "INTRO_HERE.tex")
+            RELATED_WORK_file = osp.join(folder_name, "latex", "RELATED_WORK_HERE.tex")
+            BACKGROUND_file = osp.join(folder_name, "latex", "BACKGROUND_HERE.tex")
+            METHOD_file = osp.join(folder_name, "latex", "METHOD_HERE.tex")
+            EXPERIMENTAL_SETUP_file = osp.join(
+                folder_name, "latex", "EXPERIMENTAL_SETUP_HERE.tex"
+            )
+            RESULTS_file = osp.join(folder_name, "latex", "RESULTS_HERE.tex")
+            CONCLUSIONS_file = osp.join(folder_name, "latex", "CONCLUSIONS_HERE.tex")
+
+            fnames = [
+                exp_file,
+                writeup_file,
+                notes,
+                TITLE_file,
+                ABSTRACT_file,
+                INTRO_file,
+                RELATED_WORK_file,
+                BACKGROUND_file,
+                METHOD_file,
+                EXPERIMENTAL_SETUP_file,
+                RESULTS_file,
+                CONCLUSIONS_file,
+            ]
             if model == "deepseek-coder-v2-0724":
                 main_model = Model("deepseek/deepseek-coder")
             elif model == "llama3.1-405b":
@@ -214,7 +242,7 @@ def do_idea(
                 io=io,
                 stream=False,
                 use_git=False,
-                edit_format="diff",
+                edit_format="whole",
             )
             try:
                 perform_writeup(idea, folder_name, coder, client, client_model)
@@ -231,15 +259,30 @@ def do_idea(
         if writeup == "latex":
             try:
                 paper_text = load_paper(f"{folder_name}/{idea['Name']}.pdf")
-                review = perform_review(
-                    paper_text,
-                    model="gpt-4o-2024-05-13",
-                    client=openai.OpenAI(),
-                    num_reflections=5,
-                    num_fs_examples=1,
-                    num_reviews_ensemble=5,
-                    temperature=0.1,
-                )
+                if model == "gpt-4o-2024-05-13":
+                    main_model = Model(model)
+                    review = perform_review(
+                        paper_text,
+                        model=main_model,
+                        client=openai.OpenAI(),
+                        num_reflections=5,
+                        num_fs_examples=1,
+                        num_reviews_ensemble=5,
+                        temperature=0.1,
+                    )
+                elif model.startswith("ollama"):
+                    # Use Ollama API for review generation
+                    review = perform_review(
+                        paper_text,
+                        model=model.split("/")[-1],
+                        client=openai.OpenAI(
+                            api_key="ollama", base_url="http://localhost:11434/v1"
+                        ),
+                        num_reflections=5,
+                        num_fs_examples=1,
+                        num_reviews_ensemble=5,
+                        temperature=0.1,
+                    )
                 # Store the review in separate review.txt file
                 with open(osp.join(folder_name, "review.txt"), "w") as f:
                     f.write(json.dumps(review, indent=4))
@@ -257,15 +300,31 @@ def do_idea(
                     coder, folder_name, f"{folder_name}/{idea['Name']}_improved.pdf"
                 )
                 paper_text = load_paper(f"{folder_name}/{idea['Name']}_improved.pdf")
-                review = perform_review(
-                    paper_text,
-                    model="gpt-4o-2024-05-13",
-                    client=openai.OpenAI(),
-                    num_reflections=5,
-                    num_fs_examples=1,
-                    num_reviews_ensemble=5,
-                    temperature=0.1,
-                )
+
+                if model == "gpt-4o-2024-05-13":
+                    main_model = Model(model)
+                    review = perform_review(
+                        paper_text,
+                        model=main_model,
+                        client=openai.OpenAI(),
+                        num_reflections=5,
+                        num_fs_examples=1,
+                        num_reviews_ensemble=5,
+                        temperature=0.1,
+                    )
+                elif model.startswith("ollama"):
+                    # Use Ollama API for review generation
+                    review = perform_review(
+                        paper_text,
+                        model=model.split("/")[-1],
+                        client=openai.OpenAI(
+                            api_key="ollama", base_url="http://localhost:11434/v1"
+                        ),
+                        num_reflections=5,
+                        num_fs_examples=1,
+                        num_reviews_ensemble=5,
+                        temperature=0.1,
+                    )
                 # Store the review in separate review.txt file
                 with open(osp.join(folder_name, "review_improved.txt"), "w") as f:
                     f.write(json.dumps(review))

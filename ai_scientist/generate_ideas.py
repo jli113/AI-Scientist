@@ -2,12 +2,18 @@ import json
 import os
 import os.path as osp
 import time
-from typing import List, Dict, Union
+from typing import Dict, List, Union
 
 import backoff
 import requests
+from strictjson import strict_json
 
-from ai_scientist.llm import get_response_from_llm, extract_json_between_markers, create_client, AVAILABLE_LLMS
+from ai_scientist.llm import (
+    AVAILABLE_LLMS,
+    extract_json_between_markers,
+    get_response_from_llm,
+    llm_json_auto_correct,
+)
 
 S2_API_KEY = os.getenv("S2_API_KEY")
 
@@ -38,7 +44,7 @@ NEW IDEA JSON:
 
 In <THOUGHT>, first briefly discuss your intuitions and motivations for the idea. Detail your high-level plan, necessary design choices and ideal outcomes of the experiments. Justify how the idea is different from the existing ones.
 
-In <JSON>, provide the new idea in JSON format with the following fields:
+Add '```json' before the <JSON> and '```' after the <JSON> as above. In <JSON>, provide the new idea in JSON format with the following keys and values:
 - "Name": A shortened descriptor of the idea. Lowercase, no spaces, underscores allowed.
 - "Title": A title for the idea, will be used for the report writing.
 - "Experiment": An outline of the implementation. E.g. which functions need to be added or modified, how results will be obtained, ...
@@ -59,7 +65,7 @@ Do not make things overly complicated.
 In the next attempt, try and refine and improve your idea.
 Stick to the spirit of the original idea unless there are glaring issues.
 
-Respond in the same format as before:
+Respond in the exactly the same format as before:
 THOUGHT:
 <THOUGHT>
 
@@ -69,17 +75,64 @@ NEW IDEA JSON:
 ```
 
 If there is nothing to improve, simply repeat the previous JSON EXACTLY after the thought and include "I am done" at the end of the thoughts but before the JSON.
-ONLY INCLUDE "I am done" IF YOU ARE MAKING NO MORE CHANGES."""
+ONLY INCLUDE "I am done" IF YOU ARE MAKING NO MORE CHANGES.
+"""
+
+
+# Format the content in JSON
+def format_idea_json(text):
+    json_start_marker = "```json"
+    json_end_marker = "```"
+    start_index = text.find(json_start_marker)
+    if start_index != -1:
+        start_index += len(json_start_marker)  # Move past the marker
+        end_index = text.find(json_end_marker, start_index)
+    json_string = text[start_index:end_index].strip()
+    res = strict_json(
+        system_prompt="You are a JSON formatter",
+        user_prompt=json_string,
+        output_format={
+            "Name": "A shortened descriptor of the idea",
+            "Title": "A title for the idea, will be used for the report writing",
+            "Experiment": "An outline of the implementation, type: list",
+            "Interestingness": "A rating from 1 to 10 (lowest to highest), type: int",
+            "Feasibility": "A rating from 1 to 10 (lowest to highest), type: int",
+            "Novelty": "A rating from 1 to 10 (lowest to highest), type: int",
+        },
+        llm=llm_json_auto_correct,
+    )
+    text = "```json\n" + json.dumps(res) + "```\n"
+    return text
+
+
+def format_novelty_json(text):
+    json_start_marker = "```json"
+    json_end_marker = "```"
+    start_index = text.find(json_start_marker)
+    if start_index != -1:
+        start_index += len(json_start_marker)  # Move past the marker
+        end_index = text.find(json_end_marker, start_index)
+    json_string = text[start_index:end_index].strip()
+    res = strict_json(
+        system_prompt="You are a JSON formatter",
+        user_prompt=json_string,
+        output_format={
+            "Query": "An optional search query to search the literature (e.g. attention is all you need)",
+        },
+        llm=llm_json_auto_correct,
+    )
+    text = "```json\n" + json.dumps(res) + "```\n"
+    return text
 
 
 # GENERATE IDEAS
 def generate_ideas(
-        base_dir,
-        client,
-        model,
-        skip_generation=False,
-        max_num_generations=20,
-        num_reflections=5,
+    base_dir,
+    client,
+    model,
+    skip_generation=False,
+    max_num_generations=20,
+    num_reflections=5,
 ):
     if skip_generation:
         # Load existing ideas from file
@@ -129,10 +182,13 @@ def generate_ideas(
                 system_message=idea_system_prompt,
                 msg_history=msg_history,
             )
+            ## Format the content in JSON
+            text = format_idea_json(text)
+
             ## PARSE OUTPUT
             json_output = extract_json_between_markers(text)
             assert json_output is not None, "Failed to extract JSON from LLM output"
-            print(json_output)
+            # print(json_output)
 
             # Iteratively improve task.
             if num_reflections > 1:
@@ -147,12 +203,14 @@ def generate_ideas(
                         system_message=idea_system_prompt,
                         msg_history=msg_history,
                     )
+                    ## Format the content in JSON if using weak LLM
+                    text = format_idea_json(text)
                     ## PARSE OUTPUT
                     json_output = extract_json_between_markers(text)
                     assert (
-                            json_output is not None
+                        json_output is not None
                     ), "Failed to extract JSON from LLM output"
-                    print(json_output)
+                    # print(json_output)
 
                     if "I am done" in text:
                         print(f"Idea generation converged after {j + 2} iterations.")
@@ -176,12 +234,12 @@ def generate_ideas(
 
 # GENERATE IDEAS OPEN-ENDED
 def generate_next_idea(
-        base_dir,
-        client,
-        model,
-        prev_idea_archive=[],
-        num_reflections=5,
-        max_attempts=10,
+    base_dir,
+    client,
+    model,
+    prev_idea_archive=[],
+    num_reflections=5,
+    max_attempts=10,
 ):
     idea_archive = prev_idea_archive
     original_archive_size = len(idea_archive)
@@ -228,10 +286,12 @@ Scores of 0 indicate the idea failed either during experimentation, writeup or r
                     system_message=idea_system_prompt,
                     msg_history=msg_history,
                 )
+                ## Format the content in JSON if using weak LLM
+                text = format_idea_json(text)
                 ## PARSE OUTPUT
                 json_output = extract_json_between_markers(text)
                 assert json_output is not None, "Failed to extract JSON from LLM output"
-                print(json_output)
+                # print(json_output)
 
                 # Iteratively improve task.
                 if num_reflections > 1:
@@ -246,12 +306,14 @@ Scores of 0 indicate the idea failed either during experimentation, writeup or r
                             system_message=idea_system_prompt,
                             msg_history=msg_history,
                         )
+                        ## Format the content in JSON if using weak LLM
+                        text = format_idea_json(text)
                         ## PARSE OUTPUT
                         json_output = extract_json_between_markers(text)
                         assert (
-                                json_output is not None
+                            json_output is not None
                         ), "Failed to extract JSON from LLM output"
-                        print(json_output)
+                        # print(json_output)
 
                         if "I am done" in text:
                             print(
@@ -301,10 +363,9 @@ def search_for_papers(query, result_limit=10) -> Union[None, List[Dict]]:
     rsp.raise_for_status()
     results = rsp.json()
     total = results["total"]
-    time.sleep(1.0)
     if not total:
         return None
-
+    time.sleep(2)
     papers = results["data"]
     return papers
 
@@ -355,15 +416,16 @@ In <JSON>, respond in JSON format with ONLY the following field:
 - "Query": An optional search query to search the literature (e.g. attention is all you need). You must make a query if you have not decided this round.
 
 A query will work best if you are able to recall the exact name of the paper you are looking for, or the authors.
-This JSON will be automatically parsed, so ensure the format is precise.'''
+This JSON will be automatically parsed, so ensure the format is precise.
+'''
 
 
 def check_idea_novelty(
-        ideas,
-        base_dir,
-        client,
-        model,
-        max_num_iterations=10,
+    ideas,
+    base_dir,
+    client,
+    model,
+    max_num_iterations=10,
 ):
     with open(osp.join(base_dir, "experiment.py"), "r") as f:
         code = f.read()
@@ -408,6 +470,9 @@ def check_idea_novelty(
                     print("Decision made: not novel after round", j)
                     break
 
+                ## Format the content in JSON
+                text = format_novelty_json(text)
+                print("text after formating\n", text)
                 ## PARSE OUTPUT
                 json_output = extract_json_between_markers(text)
                 assert json_output is not None, "Failed to extract JSON from LLM output"
@@ -480,7 +545,33 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Create client
-    client, client_model = create_client(args.model)
+    if args.model == "deepseek-coder-v2-0724":
+        import openai
+
+        print(f"Using OpenAI API with {args.model}.")
+        client_model = "deepseek-coder-v2-0724"
+        client = openai.OpenAI(
+            api_key=os.environ["DEEPSEEK_API_KEY"], base_url="https://api.deepseek.com"
+        )
+    elif args.model == "llama3.1-405b":
+        import openai
+
+        print(f"Using OpenAI API with {args.model}.")
+        client_model = "meta-llama/llama-3.1-405b-instruct"
+        client = openai.OpenAI(
+            api_key=os.environ["OPENROUTER_API_KEY"],
+            base_url="https://openrouter.ai/api/v1",
+        )
+    elif args.model.startswith("ollama"):
+        import openai
+
+        print(f"Using Ollama with {args.model}.")
+        client_model = args.model.split("/")[-1]
+        # client_model = args.model
+        client = openai.OpenAI(api_key="ollama", base_url="http://localhost:11434/v1")
+
+    else:
+        raise ValueError(f"Model {args.model} not supported.")
 
     base_dir = osp.join("templates", args.experiment)
     results_dir = osp.join("results", args.experiment)
