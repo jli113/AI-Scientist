@@ -1,9 +1,9 @@
-import shutil
-import os.path as osp
-import subprocess
-from subprocess import TimeoutExpired
-import sys
 import json
+import os.path as osp
+import shutil
+import subprocess
+import sys
+from subprocess import TimeoutExpired
 
 MAX_ITERS = 4
 MAX_RUNS = 5

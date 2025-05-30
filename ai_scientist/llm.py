@@ -4,26 +4,46 @@ import re
 
 import anthropic
 import backoff
+import google.generativeai as genai
 import openai
+from google.generativeai.types import GenerationConfig
 
 MAX_NUM_TOKENS = 4096
 
 # Ollama
-ollama_choices = [
-    "mistral-nemo",
-    "mistral-small",
+ollama_models = [
+    "gemma3:27b",
+    "mistral-small3.1",
     "llama3.1:70b",
 ]
 
+ollama_host_addr = ["http://localhost:11434/v1", "http://192.168.3.11:11434/v1"]
+ollama_host = ollama_host_addr[1]
+
 AVAILABLE_LLMS = [
+    # Anthropic models
     "claude-3-5-sonnet-20240620",
     "claude-3-5-sonnet-20241022",
+    # OpenAI models
+    "gpt-4o-mini",
     "gpt-4o-mini-2024-07-18",
+    "gpt-4o",
     "gpt-4o-2024-05-13",
     "gpt-4o-2024-08-06",
+    "gpt-4.1",
+    "gpt-4.1-2025-04-14",
+    "gpt-4.1-mini",
+    "gpt-4.1-mini-2025-04-14",
+    "gpt-4.1-nano",
+    "gpt-4.1-nano-2025-04-14",
+    "o1",
+    "o1-2024-12-17",
     "o1-preview-2024-09-12",
+    "o1-mini",
     "o1-mini-2024-09-12",
-    "deepseek-coder-v2-0724",
+    "o3-mini",
+    "o3-mini-2025-01-31",
+    # OpenRouter models
     "llama3.1-405b",
     # Anthropic Claude models via Amazon Bedrock
     "bedrock/anthropic.claude-3-sonnet-20240229-v1:0",
@@ -37,9 +57,21 @@ AVAILABLE_LLMS = [
     "vertex_ai/claude-3-5-sonnet-v2@20241022",
     "vertex_ai/claude-3-sonnet@20240229",
     "vertex_ai/claude-3-haiku@20240307",
+    # DeepSeek models
+    "deepseek-chat",
+    "deepseek-coder",
+    "deepseek-reasoner",
+    # Google Gemini models
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-2.0-flash-thinking-exp-01-21",
+    "gemini-2.5-pro-preview-03-25",
+    "gemini-2.5-pro-exp-03-25",
 ]
 
-for item in ollama_choices:
+for item in ollama_models:
     AVAILABLE_LLMS.append("ollama/" + item)
 
 
@@ -58,11 +90,7 @@ def get_batch_responses_from_llm(
     if msg_history is None:
         msg_history = []
 
-    if model in [
-        "gpt-4o-2024-05-13",
-        "gpt-4o-mini-2024-07-18",
-        "gpt-4o-2024-08-06",
-    ]:
+    if "gpt" in model:
         new_msg_history = msg_history + [{"role": "user", "content": msg}]
         response = client.chat.completions.create(
             model=model,
@@ -75,23 +103,6 @@ def get_batch_responses_from_llm(
             n=n_responses,
             stop=None,
             seed=0,
-        )
-        content = [r.message.content for r in response.choices]
-        new_msg_history = [
-            new_msg_history + [{"role": "assistant", "content": c}] for c in content
-        ]
-    elif model == "deepseek-coder-v2-0724":
-        new_msg_history = msg_history + [{"role": "user", "content": msg}]
-        response = client.chat.completions.create(
-            model="deepseek-coder",
-            messages=[
-                {"role": "system", "content": system_message},
-                *new_msg_history,
-            ],
-            temperature=temperature,
-            max_tokens=MAX_NUM_TOKENS,
-            n=n_responses,
-            stop=None,
         )
         content = [r.message.content for r in response.choices]
         new_msg_history = [
@@ -114,12 +125,26 @@ def get_batch_responses_from_llm(
         new_msg_history = [
             new_msg_history + [{"role": "assistant", "content": c}] for c in content
         ]
-
-    # ollama models
+    elif "ollama" in model:
+        new_msg_history = msg_history + [{"role": "user", "content": msg}]
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_message},
+                *new_msg_history,
+            ],
+            temperature=temperature,
+            max_tokens=MAX_NUM_TOKENS,
+            n=n_responses,
+            stop=None,
+        )
+        content = [r.message.content for r in response.choices]
+        new_msg_history = [
+            new_msg_history + [{"role": "assistant", "content": c}] for c in content
+        ]
     else:
         content, new_msg_history = [], []
-        for i in range(n_responses):
-            print(f"Getting {i+1}/{n_responses} response from {model}")
+        for _ in range(n_responses):
             c, hist = get_response_from_llm(
                 msg,
                 client,
@@ -132,9 +157,7 @@ def get_batch_responses_from_llm(
             content.append(c)
             new_msg_history.append(hist)
 
-
     if print_debug:
-        # Just print the first one.
         print()
         print("*" * 20 + " LLM START " + "*" * 20)
         for j, msg in enumerate(new_msg_history[0]):
@@ -159,7 +182,7 @@ def get_response_from_llm(
     if msg_history is None:
         msg_history = []
 
-    if model == "claude-3-5-sonnet-20240620":
+    if "claude" in model:
         new_msg_history = msg_history + [
             {
                 "role": "user",
@@ -172,7 +195,7 @@ def get_response_from_llm(
             }
         ]
         response = client.messages.create(
-            model="claude-3-5-sonnet-20240620",
+            model=model,
             max_tokens=MAX_NUM_TOKENS,
             temperature=temperature,
             system=system_message,
@@ -190,11 +213,7 @@ def get_response_from_llm(
                 ],
             }
         ]
-    elif model in [
-        "gpt-4o-2024-05-13",
-        "gpt-4o-mini-2024-07-18",
-        "gpt-4o-2024-08-06",
-    ]:
+    elif "gpt" in model:
         new_msg_history = msg_history + [{"role": "user", "content": msg}]
         response = client.chat.completions.create(
             model=model,
@@ -210,7 +229,7 @@ def get_response_from_llm(
         )
         content = response.choices[0].message.content
         new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
-    elif model in ["o1-preview-2024-09-12", "o1-mini-2024-09-12"]:
+    elif "o1" in model or "o3" in model:
         new_msg_history = msg_history + [{"role": "user", "content": msg}]
         response = client.chat.completions.create(
             model=model,
@@ -221,23 +240,7 @@ def get_response_from_llm(
             temperature=1,
             max_completion_tokens=MAX_NUM_TOKENS,
             n=1,
-            #stop=None,
             seed=0,
-        )
-        content = response.choices[0].message.content
-        new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
-    elif model == "deepseek-coder-v2-0724":
-        new_msg_history = msg_history + [{"role": "user", "content": msg}]
-        response = client.chat.completions.create(
-            model="deepseek-coder",
-            messages=[
-                {"role": "system", "content": system_message},
-                *new_msg_history,
-            ],
-            temperature=temperature,
-            max_tokens=MAX_NUM_TOKENS,
-            n=1,
-            stop=None,
         )
         content = response.choices[0].message.content
         new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
@@ -256,7 +259,49 @@ def get_response_from_llm(
         )
         content = response.choices[0].message.content
         new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
-    elif model in ollama_choices:
+    elif model in ["deepseek-chat", "deepseek-coder"]:
+        new_msg_history = msg_history + [{"role": "user", "content": msg}]
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_message},
+                *new_msg_history,
+            ],
+            temperature=temperature,
+            max_tokens=MAX_NUM_TOKENS,
+            n=1,
+            stop=None,
+        )
+        content = response.choices[0].message.content
+        new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
+    elif model in ["deepseek-reasoner"]:
+        new_msg_history = msg_history + [{"role": "user", "content": msg}]
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_message},
+                *new_msg_history,
+            ],
+            n=1,
+            stop=None,
+        )
+        content = response.choices[0].message.content
+        new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
+    elif "gemini" in model:
+        new_msg_history = msg_history + [{"role": "user", "content": msg}]
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_message},
+                *new_msg_history,
+            ],
+            temperature=temperature,
+            max_tokens=MAX_NUM_TOKENS,
+            n=1,
+        )
+        content = response.choices[0].message.content
+        new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
+    elif model in ollama_models:
         new_msg_history = msg_history + [{"role": "user", "content": msg}]
         response = client.chat.completions.create(
             model=model,
@@ -292,9 +337,9 @@ def get_response_from_llm(
 
 
 def llm_json_auto_correct(system_prompt: str, user_prompt: str) -> str:
-    client = openai.OpenAI(api_key="ollama", base_url="http://localhost:11434/v1")
+    client = openai.OpenAI(api_key="ollama", base_url=ollama_host)
     response = client.chat.completions.create(
-        model=ollama_choices[0],
+        model="mistral-small3.1",
         temperature=0,
         messages=[
             {"role": "system", "content": system_prompt},
@@ -331,6 +376,7 @@ def extract_json_between_markers(llm_output):
 
     return None  # No valid JSON found
 
+
 def create_client(model):
     if model.startswith("claude-"):
         print(f"Using Anthropic API with model {model}.")
@@ -343,29 +389,41 @@ def create_client(model):
         client_model = model.split("/")[-1]
         print(f"Using Vertex AI with model {client_model}.")
         return anthropic.AnthropicVertex(), client_model
-    elif 'gpt' in model:
+    elif "gpt" in model or "o1" in model or "o3" in model:
         print(f"Using OpenAI API with model {model}.")
         return openai.OpenAI(), model
-    elif model in ["o1-preview-2024-09-12", "o1-mini-2024-09-12"]:
-        print(f"Using OpenAI API with model {model}.")
-        return openai.OpenAI(), model
-    elif model == "deepseek-coder-v2-0724":
+    elif model in ["deepseek-chat", "deepseek-reasoner", "deepseek-coder"]:
         print(f"Using OpenAI API with {model}.")
-        return openai.OpenAI(
-            api_key=os.environ["DEEPSEEK_API_KEY"],
-            base_url="https://api.deepseek.com"
-        ), model
+        return (
+            openai.OpenAI(
+                api_key=os.environ["DEEPSEEK_API_KEY"],
+                base_url="https://api.deepseek.com",
+            ),
+            model,
+        )
     elif model == "llama3.1-405b":
         print(f"Using OpenAI API with {model}.")
-        return openai.OpenAI(
-            api_key=os.environ["OPENROUTER_API_KEY"],
-            base_url="https://openrouter.ai/api/v1"
-        ), "meta-llama/llama-3.1-405b-instruct"
+        return (
+            openai.OpenAI(
+                api_key=os.environ["OPENROUTER_API_KEY"],
+                base_url="https://openrouter.ai/api/v1",
+            ),
+            "meta-llama/llama-3.1-405b-instruct",
+        )
+    elif "gemini" in model:
+        print(f"Using OpenAI API with {model}.")
+        return (
+            openai.OpenAI(
+                api_key=os.environ["GEMINI_API_KEY"],
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            ),
+            model,
+        )
     elif model.startswith("ollama"):
         print(f"Using OpenAI API with {model}.")
-        return openai.OpenAI(
-            api_key="ollama", 
-            base_url="http://localhost:11434/v1"
-        ), model.split("/")[-1]
+        return (
+            openai.OpenAI(api_key="ollama", base_url=ollama_host),
+            model.split("/")[-1],
+        )
     else:
         raise ValueError(f"Model {model} not supported.")

@@ -7,53 +7,20 @@ import shutil
 import subprocess
 from typing import Optional, Tuple
 
-from strictjson import strict_json
-
 from ai_scientist.generate_ideas import search_for_papers
 from ai_scientist.llm import (
-    create_client,
     AVAILABLE_LLMS,
+    create_client,
     extract_json_between_markers,
     get_response_from_llm,
-    llm_json_auto_correct,
 )
-
-
-def format_citation_first_json(text):
-    res = strict_json(
-        system_prompt="You are a JSON formatter",
-        user_prompt=text,
-        return_as_json=True,
-        output_format={
-            "Description": "A precise description of the required edit, along with the proposed text and location where it should be made",
-            "Query": "The search query to find the paper (e.g. attention is all you need)",
-        },
-        llm=llm_json_auto_correct,
-    )
-    text = json.loads(res)
-    return text
-
-
-def format_citation_second_json(text):
-    res = strict_json(
-        system_prompt="You are a JSON formatter",
-        user_prompt=text,
-        return_as_json=True,
-        output_format={
-            "Selected": "A list of the indices of the selected papers to be cited, e.g. '[0, 1]'. Can be '[]' if no papers are selected. This must be a string",
-            "Description": "Update the previous description of the required edit if needed. Ensure that any cites precisely match the name in the bibtex",
-        },
-        llm=llm_json_auto_correct,
-    )
-    text = json.loads(res)
-    return text
 
 
 # GENERATE LATEX
 def generate_latex(coder, folder_name, pdf_file, timeout=30, num_error_corrections=5):
     folder = osp.abspath(folder_name)
     cwd = osp.join(folder, "latex")  # Fixed potential issue with path
-    writeup_file = osp.join(cwd, "template_segments.tex")
+    writeup_file = osp.join(cwd, "template.tex")
 
     # Check all references are valid and in the references.bib file
     with open(writeup_file, "r") as f:
@@ -65,7 +32,7 @@ def generate_latex(coder, folder_name, pdf_file, timeout=30, num_error_correctio
         re.DOTALL,
     )
     if references_bib is None:
-        print("No references.bib found in template_segments.tex")
+        print("No references.bib found in template.tex")
         return
     bib_text = references_bib.group(1)
     cites = [cite.strip() for item in cites for cite in item.split(",")]
@@ -73,7 +40,7 @@ def generate_latex(coder, folder_name, pdf_file, timeout=30, num_error_correctio
         if cite not in bib_text:
             print(f"Reference {cite} not found in references.")
             prompt = f"""Reference {cite} not found in references.bib. Is this included under a different name?
-If so, please modify the citation in template_segments.tex to match the name in references.bib at the top. Otherwise, remove the cite."""
+If so, please modify the citation in template.tex to match the name in references.bib at the top. Otherwise, remove the cite."""
             coder.run(prompt)
 
     # Check all included figures are actually in the directory.
@@ -117,7 +84,7 @@ If duplicated, identify the best location for the section header and remove any 
         # Filter trivial bugs in chktex
         check_output = os.popen(f"chktex {writeup_file} -q -n2 -n24 -n13 -n1").read()
         if check_output:
-            prompt = f"""Please fix the following LaTeX errors in `template_segments.tex` guided by the output of `chktek`:
+            prompt = f"""Please fix the following LaTeX errors in `template.tex` guided by the output of `chktek`:
 {check_output}.
 
 Make the minimal fix required and do not remove or change any packages.
@@ -133,10 +100,10 @@ def compile_latex(cwd, pdf_file, timeout=30):
     print("GENERATING LATEX")
 
     commands = [
-        ["pdflatex", "-interaction=nonstopmode", "template_segments.tex"],
+        ["pdflatex", "-interaction=nonstopmode", "template.tex"],
         ["bibtex", "template"],
-        ["pdflatex", "-interaction=nonstopmode", "template_segments.tex"],
-        ["pdflatex", "-interaction=nonstopmode", "template_segments.tex"],
+        ["pdflatex", "-interaction=nonstopmode", "template.tex"],
+        ["pdflatex", "-interaction=nonstopmode", "template.tex"],
     ]
 
     for command in commands:
@@ -160,7 +127,7 @@ def compile_latex(cwd, pdf_file, timeout=30):
 
     # Attempt to move the PDF to the desired location
     try:
-        shutil.move(osp.join(cwd, "template_segments.pdf"), pdf_file)
+        shutil.move(osp.join(cwd, "template.pdf"), pdf_file)
     except FileNotFoundError:
         print("Failed to rename PDF.")
 
@@ -332,7 +299,7 @@ This JSON will be automatically parsed, so ensure the format is precise."""
 
 
 def get_citation_aider_prompt(
-    client, model, draft, current_round, total_rounds
+    client, model, draft, current_round, total_rounds, engine="semanticscholar"
 ) -> Tuple[Optional[str], bool]:
     msg_history = []
     try:
@@ -350,11 +317,10 @@ def get_citation_aider_prompt(
             return None, True
 
         ## PARSE OUTPUT
-        # json_output = extract_json_between_markers(text)
-        json_output = format_citation_first_json(text)
+        json_output = extract_json_between_markers(text)
         assert json_output is not None, "Failed to extract JSON from LLM output"
         query = json_output["Query"]
-        papers = search_for_papers(query)
+        papers = search_for_papers(query, engine=engine)
     except Exception as e:
         print(f"Error: {e}")
         return None, False
@@ -393,8 +359,7 @@ def get_citation_aider_prompt(
             print("Do not add any.")
             return None, False
         ## PARSE OUTPUT
-        # json_output = extract_json_between_markers(text)
-        json_output = format_citation_second_json(text)
+        json_output = extract_json_between_markers(text)
         assert json_output is not None, "Failed to extract JSON from LLM output"
         desc = json_output["Description"]
         selected_papers = json_output["Selected"]
@@ -439,7 +404,13 @@ Ensure the citation is well-integrated into the text.'''
 
 # PERFORM WRITEUP
 def perform_writeup(
-        idea, folder_name, coder, cite_client, cite_model, num_cite_rounds=20
+    idea,
+    folder_name,
+    coder,
+    cite_client,
+    cite_model,
+    num_cite_rounds=20,
+    engine="semanticscholar",
 ):
     # CURRENTLY ASSUMES LATEX
     abstract_prompt = f"""We've provided the `latex/template.tex` file to the project. We will be filling it in section by section.
@@ -506,7 +477,7 @@ Be sure to first name the file and use *SEARCH/REPLACE* blocks to perform these 
         with open(osp.join(folder_name, "latex", "template.tex"), "r") as f:
             draft = f.read()
         prompt, done = get_citation_aider_prompt(
-            cite_client, cite_model, draft, _, num_cite_rounds
+            cite_client, cite_model, draft, _, num_cite_rounds, engine=engine
         )
         if done:
             break
@@ -517,152 +488,6 @@ Be sure to first name the file and use *SEARCH/REPLACE* blocks to perform these 
             search_str = r"\end{filecontents}"
             draft = draft.replace(search_str, f"{bibtex_string}{search_str}")
             with open(osp.join(folder_name, "latex", "template.tex"), "w") as f:
-                f.write(draft)
-            coder_out = coder.run(prompt)
-
-    coder_out = coder.run(
-        refinement_prompt.format(section="Related Work")
-        .replace(r"{{", "{")
-        .replace(r"}}", "}")
-    )
-
-    ## SECOND REFINEMENT LOOP
-    coder.run(
-        """Great job! Now that there is a complete draft of the entire paper, let's refine each section again.
-First, re-think the Title if necessary. Keep this concise and descriptive of the paper's concept, but try by creative with it."""
-    )
-    for section in [
-        "Abstract",
-        "Related Work",
-        "Introduction",
-        "Background",
-        "Method",
-        "Experimental Setup",
-        "Results",
-        "Conclusion",
-    ]:
-        coder_out = coder.run(
-            second_refinement_prompt.format(
-                section=section, tips=per_section_tips[section]
-            )
-            .replace(r"{{", "{")
-            .replace(r"}}", "}")
-        )
-
-    generate_latex(coder, folder_name, f"{folder_name}/{idea['Name']}.pdf")
-
-def perform_writeup_separated(
-    idea, folder_name, coder, cite_client, cite_model, num_cite_rounds=20
-):
-    dic_section_files = {
-        "TITLE": "TITLE_HERE.tex",
-        "ABSTRACT": "ABSTRACT_HERE.tex",
-        "Introduction": "INTRO_HERE.tex",
-        "Background": "BACKGROUND_HERE.tex",
-        "Related work": "RELATED_WORK_HERE.tex",
-        "Method": "METHOD_HERE.tex",
-        "Experimental Setup": "EXPERIMENTAL_SETUP_HERE.tex",
-        "Results": "RESULTS_HERE.tex",
-        "Conclusion": "CONCLUSIONS_HERE.tex",
-    }
-
-    title_prompt = f"""We've provided the file to the project. 
-    
-    We will be filling it in section by section. Every section is located in a separate file. 
-
-    First, please fill the "Title" sections of the writeup in file {dic_section_files["TITLE"]}.
-
-    Before every paragraph, please include a brief description of what you plan to write in that paragraph in a comment.
-
-    Be sure to first name the file and then filling.
-    """
-    coder_out = coder.run(title_prompt)
-    coder_out = coder.run(
-        refinement_prompt.format(section="Title")
-        .replace(r"{{", "{")
-        .replace(r"}}", "}")
-    )
-
-    # CURRENTLY ASSUMES LATEX
-    abstract_prompt = f"""We've provided the `latex/template_segments.tex` file to the project. 
-     We will be filling it in section by section. Every section is located in a separate file. 
-
-    First, please fill the "Abstract" sections of the writeup in file {dic_section_files["ABSTRACT"]}.
-    
-    Some tips are provided below:
-    {per_section_tips["Abstract"]}
-    
-    Before every paragraph, please include a brief description of what you plan to write in that paragraph in a comment.
-    
-    Be sure to first name the file and then filling.
-    """
-
-    coder_out = coder.run(abstract_prompt)
-    coder_out = coder.run(
-        refinement_prompt.format(section="Abstract")
-        .replace(r"{{", "{")
-        .replace(r"}}", "}")
-    )
-    for section in [
-        "Introduction",
-        "Background",
-        "Method",
-        "Experimental Setup",
-        "Results",
-        "Conclusion",
-    ]:
-        section_prompt = f"""Please fill in the {section} of the writeup in file {dic_section_files[section]}. Some tips are provided below:
-{per_section_tips[section]}
-
-Be sure to use \cite or \citet where relevant, referring to the works provided in the file.
-Do not cite anything that is not already in `references.bib`. Do not add any new entries to this.
-
-Keep the experimental results (figures and tables) only in the Results section, and make sure that any captions are filled in.
-In this pass, do not reference anything in later sections of the paper.
-
-Before every paragraph, please include a brief description of what you plan to write in that paragraph in a comment.
-
-Be sure to first name the file and then filling.
-"""
-        coder_out = coder.run(section_prompt)
-        coder_out = coder.run(
-            refinement_prompt.format(section=section)
-            .replace(r"{{", "{")
-            .replace(r"}}", "}")
-        )
-
-    # SKETCH THE RELATED WORK
-    section_prompt = f"""Please fill in the Related Work of the writeup in file {dic_section_files['Related work']}. Some tips are provided below:
-
-{per_section_tips["Related Work"]}
-
-For this section, very briefly sketch out the structure of the section, and clearly indicate what papers you intend to include.
-Do this all in LaTeX comments using %.
-The related work should be concise, only plan to discuss the most relevant work.
-Do not modify `references.bib` to add any new citations, this will be filled in at a later stage.
-
-Be sure to first name the file and then filling.
-"""
-    coder_out = coder.run(section_prompt)
-
-    # Fill paper with cites.
-    for _ in range(num_cite_rounds):
-        with open(osp.join(folder_name, "latex", "template_segments.tex"), "r") as f:
-            draft = f.read()
-        prompt, done = get_citation_aider_prompt(
-            cite_client, cite_model, draft, _, num_cite_rounds
-        )
-        if done:
-            break
-        if prompt is not None:
-            # extract bibtex string
-            bibtex_string = prompt.split('"""')[1]
-            # insert this into draft before the "\end{filecontents}" line
-            search_str = r"\end{filecontents}"
-            draft = draft.replace(search_str, f"{bibtex_string}{search_str}")
-            with open(
-                osp.join(folder_name, "latex", "template_segments.tex"), "w"
-            ) as f:
                 f.write(draft)
             coder_out = coder.run(prompt)
 
@@ -715,6 +540,13 @@ if __name__ == "__main__":
         choices=AVAILABLE_LLMS,
         help="Model to use for AI Scientist.",
     )
+    parser.add_argument(
+        "--engine",
+        type=str,
+        default="semanticscholar",
+        choices=["semanticscholar", "openalex"],
+        help="Scholar engine to use.",
+    )
     args = parser.parse_args()
     client, client_model = create_client(args.model)
     print("Make sure you cleaned the Aider logs if re-generating the writeup!")
@@ -724,10 +556,7 @@ if __name__ == "__main__":
     vis_file = osp.join(folder_name, "plot.py")
     notes = osp.join(folder_name, "notes.txt")
     model = args.model
-    if model.startswith("ollama"):
-        writeup_file = osp.join(folder_name, "latex", "template_segments.tex")
-    else:
-        writeup_file = osp.join(folder_name, "latex", "template.tex")
+    writeup_file = osp.join(folder_name, "latex", "template.tex")
     ideas_file = osp.join(folder_name, "ideas.json")
     with open(ideas_file, "r") as f:
         ideas = json.load(f)
@@ -751,17 +580,14 @@ if __name__ == "__main__":
         io=io,
         stream=False,
         use_git=False,
-        edit_format="whole",
+        edit_format="diff",
     )
     if args.no_writing:
         generate_latex(coder, args.folder, f"{args.folder}/test.pdf")
-    elif model.startswith("ollama"):
-        try:
-            perform_writeup_separated(idea, folder_name, coder, client, client_model)
-        except Exception as e:
-            print(f"Failed to perform writeup: {e}")
     else:
         try:
-            perform_writeup(idea, folder_name, coder, client, client_model)
+            perform_writeup(
+                idea, folder_name, coder, client, client_model, engine=args.engine
+            )
         except Exception as e:
             print(f"Failed to perform writeup: {e}")

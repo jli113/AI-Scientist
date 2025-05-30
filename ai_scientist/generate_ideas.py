@@ -6,13 +6,12 @@ from typing import Dict, List, Union
 
 import backoff
 import requests
-from strictjson import strict_json
 
 from ai_scientist.llm import (
     AVAILABLE_LLMS,
+    create_client,
     extract_json_between_markers,
     get_response_from_llm,
-    llm_json_auto_correct,
 )
 
 S2_API_KEY = os.getenv("S2_API_KEY")
@@ -44,7 +43,7 @@ NEW IDEA JSON:
 
 In <THOUGHT>, first briefly discuss your intuitions and motivations for the idea. Detail your high-level plan, necessary design choices and ideal outcomes of the experiments. Justify how the idea is different from the existing ones.
 
-Add '```json' before the <JSON> and '```' after the <JSON> as above. In <JSON>, provide the new idea in JSON format with the following keys and values:
+In <JSON>, provide the new idea in JSON format with the following fields:
 - "Name": A shortened descriptor of the idea. Lowercase, no spaces, underscores allowed.
 - "Title": A title for the idea, will be used for the report writing.
 - "Experiment": An outline of the implementation. E.g. which functions need to be added or modified, how results will be obtained, ...
@@ -65,7 +64,7 @@ Do not make things overly complicated.
 In the next attempt, try and refine and improve your idea.
 Stick to the spirit of the original idea unless there are glaring issues.
 
-Respond in the exactly the same format as before:
+Respond in the same format as before:
 THOUGHT:
 <THOUGHT>
 
@@ -75,54 +74,7 @@ NEW IDEA JSON:
 ```
 
 If there is nothing to improve, simply repeat the previous JSON EXACTLY after the thought and include "I am done" at the end of the thoughts but before the JSON.
-ONLY INCLUDE "I am done" IF YOU ARE MAKING NO MORE CHANGES.
-"""
-
-
-# Format the content in JSON
-def format_idea_json(text):
-    json_start_marker = "```json"
-    json_end_marker = "```"
-    start_index = text.find(json_start_marker)
-    if start_index != -1:
-        start_index += len(json_start_marker)  # Move past the marker
-        end_index = text.find(json_end_marker, start_index)
-    json_string = text[start_index:end_index].strip()
-    res = strict_json(
-        system_prompt="You are a JSON formatter",
-        user_prompt=json_string,
-        output_format={
-            "Name": "A shortened descriptor of the idea",
-            "Title": "A title for the idea, will be used for the report writing",
-            "Experiment": "An outline of the implementation, type: list",
-            "Interestingness": "A rating from 1 to 10 (lowest to highest), type: int",
-            "Feasibility": "A rating from 1 to 10 (lowest to highest), type: int",
-            "Novelty": "A rating from 1 to 10 (lowest to highest), type: int",
-        },
-        llm=llm_json_auto_correct,
-    )
-    text = "```json\n" + json.dumps(res) + "```\n"
-    return text
-
-
-def format_novelty_json(text):
-    json_start_marker = "```json"
-    json_end_marker = "```"
-    start_index = text.find(json_start_marker)
-    if start_index != -1:
-        start_index += len(json_start_marker)  # Move past the marker
-        end_index = text.find(json_end_marker, start_index)
-    json_string = text[start_index:end_index].strip()
-    res = strict_json(
-        system_prompt="You are a JSON formatter",
-        user_prompt=json_string,
-        output_format={
-            "Query": "An optional search query to search the literature (e.g. attention is all you need)",
-        },
-        llm=llm_json_auto_correct,
-    )
-    text = "```json\n" + json.dumps(res) + "```\n"
-    return text
+ONLY INCLUDE "I am done" IF YOU ARE MAKING NO MORE CHANGES."""
 
 
 # GENERATE IDEAS
@@ -182,13 +134,10 @@ def generate_ideas(
                 system_message=idea_system_prompt,
                 msg_history=msg_history,
             )
-            ## Format the content in JSON
-            text = format_idea_json(text)
-
             ## PARSE OUTPUT
             json_output = extract_json_between_markers(text)
             assert json_output is not None, "Failed to extract JSON from LLM output"
-            # print(json_output)
+            print(json_output)
 
             # Iteratively improve task.
             if num_reflections > 1:
@@ -203,14 +152,12 @@ def generate_ideas(
                         system_message=idea_system_prompt,
                         msg_history=msg_history,
                     )
-                    ## Format the content in JSON if using weak LLM
-                    text = format_idea_json(text)
                     ## PARSE OUTPUT
                     json_output = extract_json_between_markers(text)
                     assert (
                         json_output is not None
                     ), "Failed to extract JSON from LLM output"
-                    # print(json_output)
+                    print(json_output)
 
                     if "I am done" in text:
                         print(f"Idea generation converged after {j + 2} iterations.")
@@ -286,12 +233,10 @@ Scores of 0 indicate the idea failed either during experimentation, writeup or r
                     system_message=idea_system_prompt,
                     msg_history=msg_history,
                 )
-                ## Format the content in JSON if using weak LLM
-                text = format_idea_json(text)
                 ## PARSE OUTPUT
                 json_output = extract_json_between_markers(text)
                 assert json_output is not None, "Failed to extract JSON from LLM output"
-                # print(json_output)
+                print(json_output)
 
                 # Iteratively improve task.
                 if num_reflections > 1:
@@ -306,14 +251,12 @@ Scores of 0 indicate the idea failed either during experimentation, writeup or r
                             system_message=idea_system_prompt,
                             msg_history=msg_history,
                         )
-                        ## Format the content in JSON if using weak LLM
-                        text = format_idea_json(text)
                         ## PARSE OUTPUT
                         json_output = extract_json_between_markers(text)
                         assert (
                             json_output is not None
                         ), "Failed to extract JSON from LLM output"
-                        # print(json_output)
+                        print(json_output)
 
                         if "I am done" in text:
                             print(
@@ -344,30 +287,89 @@ def on_backoff(details):
 @backoff.on_exception(
     backoff.expo, requests.exceptions.HTTPError, on_backoff=on_backoff
 )
-def search_for_papers(query, result_limit=10) -> Union[None, List[Dict]]:
+def search_for_papers(
+    query, result_limit=10, engine="semanticscholar"
+) -> Union[None, List[Dict]]:
     if not query:
         return None
-    rsp = requests.get(
-        "https://api.semanticscholar.org/graph/v1/paper/search",
-        headers={"X-API-KEY": S2_API_KEY},
-        params={
-            "query": query,
-            "limit": result_limit,
-            "fields": "title,authors,venue,year,abstract,citationStyles,citationCount",
-        },
-    )
-    print(f"Response Status Code: {rsp.status_code}")
-    print(
-        f"Response Content: {rsp.text[:500]}"
-    )  # Print the first 500 characters of the response content
-    rsp.raise_for_status()
-    results = rsp.json()
-    total = results["total"]
-    if not total:
-        return None
-    time.sleep(2)
-    papers = results["data"]
-    return papers
+    if engine == "semanticscholar":
+        rsp = requests.get(
+            "https://api.semanticscholar.org/graph/v1/paper/search",
+            headers={"X-API-KEY": S2_API_KEY} if S2_API_KEY else {},
+            params={
+                "query": query,
+                "limit": result_limit,
+                "fields": "title,authors,venue,year,abstract,citationStyles,citationCount",
+            },
+        )
+        print(f"Response Status Code: {rsp.status_code}")
+        print(
+            f"Response Content: {rsp.text[:500]}"
+        )  # Print the first 500 characters of the response content
+        rsp.raise_for_status()
+        results = rsp.json()
+        total = results["total"]
+        time.sleep(1.0)
+        if not total:
+            return None
+
+        papers = results["data"]
+        return papers
+    elif engine == "openalex":
+        import pyalex
+        from pyalex import Work, Works
+
+        mail = os.environ.get("OPENALEX_MAIL_ADDRESS", None)
+        if mail is None:
+            print(
+                "[WARNING] Please set OPENALEX_MAIL_ADDRESS for better access to OpenAlex API!"
+            )
+        else:
+            pyalex.config.email = mail
+
+        def extract_info_from_work(
+            work: Work, max_abstract_length: int = 1000
+        ) -> dict[str, str]:
+            # "Unknown" is returned when venue is unknown...
+            venue = "Unknown"
+            for i, location in enumerate(work["locations"]):
+                if location["source"] is not None:
+                    venue = location["source"]["display_name"]
+                    if venue != "":
+                        break
+            title = work["title"]
+            abstract = work["abstract"]
+            if abstract is None:
+                abstract = ""
+            if len(abstract) > max_abstract_length:
+                # To avoid context length exceed error.
+                print(
+                    f"[WARNING] {title=}: {len(abstract)=} is too long! Use first {max_abstract_length} chars."
+                )
+                abstract = abstract[:max_abstract_length]
+            authors_list = [
+                author["author"]["display_name"] for author in work["authorships"]
+            ]
+            authors = (
+                " and ".join(authors_list)
+                if len(authors_list) < 20
+                else f"{authors_list[0]} et al."
+            )
+            paper = dict(
+                title=title,
+                authors=authors,
+                venue=venue,
+                year=work["publication_year"],
+                abstract=abstract,
+                citationCount=work["cited_by_count"],
+            )
+            return paper
+
+        works: List[Dict] = Works().search(query).get(per_page=result_limit)
+        papers: List[Dict[str, str]] = [extract_info_from_work(work) for work in works]
+        return papers
+    else:
+        raise NotImplementedError(f"{engine=} not supported!")
 
 
 novelty_system_msg = """You are an ambitious AI PhD student who is looking to publish a paper that will contribute significantly to the field.
@@ -416,8 +418,7 @@ In <JSON>, respond in JSON format with ONLY the following field:
 - "Query": An optional search query to search the literature (e.g. attention is all you need). You must make a query if you have not decided this round.
 
 A query will work best if you are able to recall the exact name of the paper you are looking for, or the authors.
-This JSON will be automatically parsed, so ensure the format is precise.
-'''
+This JSON will be automatically parsed, so ensure the format is precise.'''
 
 
 def check_idea_novelty(
@@ -426,6 +427,7 @@ def check_idea_novelty(
     client,
     model,
     max_num_iterations=10,
+    engine="semanticscholar",
 ):
     with open(osp.join(base_dir, "experiment.py"), "r") as f:
         code = f.read()
@@ -470,16 +472,13 @@ def check_idea_novelty(
                     print("Decision made: not novel after round", j)
                     break
 
-                ## Format the content in JSON
-                text = format_novelty_json(text)
-                print("text after formating\n", text)
                 ## PARSE OUTPUT
                 json_output = extract_json_between_markers(text)
                 assert json_output is not None, "Failed to extract JSON from LLM output"
 
                 ## SEARCH FOR PAPERS
                 query = json_output["Query"]
-                papers = search_for_papers(query, result_limit=10)
+                papers = search_for_papers(query, result_limit=10, engine=engine)
                 if papers is None:
                     papers_str = "No papers found."
 
@@ -545,33 +544,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Create client
-    if args.model == "deepseek-coder-v2-0724":
-        import openai
-
-        print(f"Using OpenAI API with {args.model}.")
-        client_model = "deepseek-coder-v2-0724"
-        client = openai.OpenAI(
-            api_key=os.environ["DEEPSEEK_API_KEY"], base_url="https://api.deepseek.com"
-        )
-    elif args.model == "llama3.1-405b":
-        import openai
-
-        print(f"Using OpenAI API with {args.model}.")
-        client_model = "meta-llama/llama-3.1-405b-instruct"
-        client = openai.OpenAI(
-            api_key=os.environ["OPENROUTER_API_KEY"],
-            base_url="https://openrouter.ai/api/v1",
-        )
-    elif args.model.startswith("ollama"):
-        import openai
-
-        print(f"Using Ollama with {args.model}.")
-        client_model = args.model.split("/")[-1]
-        # client_model = args.model
-        client = openai.OpenAI(api_key="ollama", base_url="http://localhost:11434/v1")
-
-    else:
-        raise ValueError(f"Model {args.model} not supported.")
+    client, client_model = create_client(args.model)
 
     base_dir = osp.join("templates", args.experiment)
     results_dir = osp.join("results", args.experiment)

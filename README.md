@@ -46,9 +46,11 @@ We provide all runs and data from our paper [here](https://drive.google.com/driv
     - [Anthropic API (Claude Sonnet 3.5)](#anthropic-api-claude-sonnet-35)
       - [Claude Models via Bedrock](#claude-models-via-bedrock)
       - [Claude Models via Vertex AI](#claude-models-via-vertex-ai)
-    - [DeepSeek API (DeepSeek-Coder-V2)](#deepseek-api-deepseek-coder-v2)
+    - [DeepSeek API (deepseek-chat, deepseek-reasoner)](#deepseek-api-deepseek-chat-deepseek-reasoner)
     - [OpenRouter API (Llama3.1)](#openrouter-api-llama31)
+    - [Google Gemini](#google-gemini)
     - [Semantic Scholar API (Literature Search)](#semantic-scholar-api-literature-search)
+    - [OpenAlex API (Literature Search Alternative)](#openalex-api-literature-search-alternative)
 - [Setting Up the Templates](#setting-up-the-templates)
   - [NanoGPT Template](#nanogpt-template)
   - [2D Diffusion Template](#2d-diffusion-template)
@@ -127,13 +129,21 @@ export VERTEXAI_LOCATION="REGION"         # for Aider/LiteLLM call
 export VERTEXAI_PROJECT="PROJECT_ID"      # for Aider/LiteLLM call
 ```
 
-#### DeepSeek API (DeepSeek-Coder-V2)
+#### DeepSeek API (deepseek-chat, deepseek-reasoner)
 
 By default, this uses the `DEEPSEEK_API_KEY` environment variable.
 
 #### OpenRouter API (Llama3.1)
 
 By default, this uses the `OPENROUTER_API_KEY` environment variable.
+
+#### Google Gemini
+
+We support Google Gemini models (e.g., "gemini-1.5-flash", "gemini-1.5-pro") via the [google-generativeai](https://pypi.org/project/google-generativeai) Python library. By default, it uses the environment variable:
+
+```bash
+export GEMINI_API_KEY="YOUR GEMINI API KEY"
+```
 
 #### Semantic Scholar API (Literature Search)
 
@@ -145,6 +155,20 @@ Be sure to provide the key for the model used for your runs, e.g.:
 export OPENAI_API_KEY="YOUR KEY HERE"
 export S2_API_KEY="YOUR KEY HERE"
 ```
+
+#### OpenAlex API (Literature Search Alternative)
+
+OpenAlex API can be used as an alternative if you do not have a Semantic Scholar API Key.
+OpenAlex does not require API key.
+
+```bash
+pip install pyalex
+export OPENALEX_MAIL_ADDRESS="YOUR EMAIL ADDRESS"
+```
+
+And specify `--engine openalex` when you execute the AI Scientist code.
+
+Note that this is experimental for those who do not have a Semantic Scholar API Key.
 
 ## Setting Up the Templates
 
@@ -230,7 +254,7 @@ conda activate ai_scientist
 # Run the paper generation.
 python launch_scientist.py --model "gpt-4o-2024-05-13" --experiment nanoGPT_lite --num-ideas 2
 python launch_scientist.py --model "claude-3-5-sonnet-20241022" --experiment nanoGPT_lite --num-ideas 2
-python launch_scientist.py --model "ollama/mistral-nemo" --experiment nanoGPT_lite --num-ideas 2
+python launch_scientist.py --model "ollama/mistral-small3.1" --experiment nanoGPT_lite --num-ideas 2
 ```
 
 If you have more than one GPU, use the `--parallel` option to parallelize ideas across multiple GPUs.
@@ -291,6 +315,10 @@ We welcome community contributions in the form of new templates. While these are
 - Infectious Disease Modeling (`seir`) - [PR #137](https://github.com/SakanaAI/AI-Scientist/pull/137)
 - Image Classification with MobileNetV3 (`mobilenetV3`) - [PR #141](https://github.com/SakanaAI/AI-Scientist/pull/141)
 - Sketch RNN (`sketch_rnn`) - [PR #143](https://github.com/SakanaAI/AI-Scientist/pull/143)
+- AI in Quantum Chemistry (`MACE`) - [PR#157](https://github.com/SakanaAI/AI-Scientist/pull/157)
+- Earthquake Prediction (`earthquake-prediction`) - [PR #167](https://github.com/SakanaAI/AI-Scientist/pull/167)
+- Tensorial Radiance Fields (`tensorf`) - [PR #175](https://github.com/SakanaAI/AI-Scientist/pull/175)
+- Large Language Model Steering / Probes (`probes`) - [PR #215](https://github.com/SakanaAI/AI-Scientist/pull/215)
 
 _This section is reserved for community contributions. Please submit a pull request to add your template to the list! Please describe the template in the PR description, and also show examples of the generated papers._
 

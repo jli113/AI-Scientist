@@ -1,23 +1,24 @@
 import argparse
 import json
 import multiprocessing
-import openai
 import os
 import os.path as osp
 import shutil
 import sys
 import time
+from datetime import datetime
+
+import openai
 import torch
 from aider.coders import Coder
 from aider.io import InputOutput
 from aider.models import Model
-from datetime import datetime
 
-from ai_scientist.generate_ideas import generate_ideas, check_idea_novelty
-from ai_scientist.llm import create_client, AVAILABLE_LLMS
+from ai_scientist.generate_ideas import check_idea_novelty, generate_ideas
+from ai_scientist.llm import AVAILABLE_LLMS, create_client, ollama_host
 from ai_scientist.perform_experiments import perform_experiments
-from ai_scientist.perform_review import perform_review, load_paper, perform_improvement
-from ai_scientist.perform_writeup import perform_writeup, generate_latex
+from ai_scientist.perform_review import load_paper, perform_improvement, perform_review
+from ai_scientist.perform_writeup import generate_latex, perform_writeup
 
 NUM_REFLECTIONS = 3
 
@@ -82,6 +83,13 @@ def parse_arguments():
         default=50,
         help="Number of ideas to generate",
     )
+    parser.add_argument(
+        "--engine",
+        type=str,
+        default="semanticscholar",
+        choices=["semanticscholar", "openalex"],
+        help="Scholar engine to use.",
+    )
     return parser.parse_args()
 
 
@@ -89,6 +97,28 @@ def get_available_gpus(gpu_ids=None):
     if gpu_ids is not None:
         return [int(gpu_id) for gpu_id in gpu_ids.split(",")]
     return list(range(torch.cuda.device_count()))
+
+
+def check_latex_dependencies():
+    """
+    Check if required LaTeX dependencies are installed on the system.
+    Returns True if all dependencies are found, False otherwise.
+    """
+    import shutil
+    import sys
+
+    required_dependencies = ["pdflatex", "chktex"]
+    missing_deps = []
+
+    for dep in required_dependencies:
+        if shutil.which(dep) is None:
+            missing_deps.append(dep)
+
+    if missing_deps:
+        print("Error: Required LaTeX dependencies not found:", file=sys.stderr)
+        return False
+
+    return True
 
 
 def worker(
@@ -143,7 +173,9 @@ def do_idea(
     shutil.copytree(base_dir, destination_dir, dirs_exist_ok=True)
     with open(osp.join(base_dir, "run_0", "final_info.json"), "r") as f:
         baseline_results = json.load(f)
-    baseline_results = {k: v["means"] for k, v in baseline_results.items()}
+    # Check if baseline_results is a dictionary before extracting means
+    if isinstance(baseline_results, dict):
+        baseline_results = {k: v["means"] for k, v in baseline_results.items()}
     exp_file = osp.join(folder_name, "experiment.py")
     vis_file = osp.join(folder_name, "plot.py")
     notes = osp.join(folder_name, "notes.txt")
@@ -168,10 +200,10 @@ def do_idea(
         io = InputOutput(
             yes=True, chat_history_file=f"{folder_name}/{idea_name}_aider.txt"
         )
-        if model == "hybrid":
-            main_model = Model("claude-3-5-sonnet-20240620")
-        elif model == "deepseek-coder-v2-0724":
+        if model == "deepseek-coder-v2-0724":
             main_model = Model("deepseek/deepseek-coder")
+        elif model == "deepseek-reasoner":
+            main_model = Model("deepseek/deepseek-reasoner")
         elif model == "llama3.1-405b":
             main_model = Model("openrouter/meta-llama/llama-3.1-405b-instruct")
         else:
@@ -202,36 +234,12 @@ def do_idea(
         print(f"*Starting Writeup*")
         ## PERFORM WRITEUP
         if writeup == "latex":
-            writeup_file = osp.join(folder_name, "latex", "template_segments.tex")
-            TITLE_file = osp.join(folder_name, "latex", "TITLE_HERE.tex")
-            ABSTRACT_file = osp.join(folder_name, "latex", "ABSTRACT_HERE.tex")
-
-            INTRO_file = osp.join(folder_name, "latex", "INTRO_HERE.tex")
-            RELATED_WORK_file = osp.join(folder_name, "latex", "RELATED_WORK_HERE.tex")
-            BACKGROUND_file = osp.join(folder_name, "latex", "BACKGROUND_HERE.tex")
-            METHOD_file = osp.join(folder_name, "latex", "METHOD_HERE.tex")
-            EXPERIMENTAL_SETUP_file = osp.join(
-                folder_name, "latex", "EXPERIMENTAL_SETUP_HERE.tex"
-            )
-            RESULTS_file = osp.join(folder_name, "latex", "RESULTS_HERE.tex")
-            CONCLUSIONS_file = osp.join(folder_name, "latex", "CONCLUSIONS_HERE.tex")
-
-            fnames = [
-                exp_file,
-                writeup_file,
-                notes,
-                TITLE_file,
-                ABSTRACT_file,
-                INTRO_file,
-                RELATED_WORK_file,
-                BACKGROUND_file,
-                METHOD_file,
-                EXPERIMENTAL_SETUP_file,
-                RESULTS_file,
-                CONCLUSIONS_file,
-            ]
+            writeup_file = osp.join(folder_name, "latex", "template.tex")
+            fnames = [exp_file, writeup_file, notes]
             if model == "deepseek-coder-v2-0724":
                 main_model = Model("deepseek/deepseek-coder")
+            elif model == "deepseek-reasoner":
+                main_model = Model("deepseek/deepseek-reasoner")
             elif model == "llama3.1-405b":
                 main_model = Model("openrouter/meta-llama/llama-3.1-405b-instruct")
             else:
@@ -242,10 +250,12 @@ def do_idea(
                 io=io,
                 stream=False,
                 use_git=False,
-                edit_format="whole",
+                edit_format="diff",
             )
             try:
-                perform_writeup(idea, folder_name, coder, client, client_model)
+                perform_writeup(
+                    idea, folder_name, coder, client, client_model, engine=args.engine
+                )
             except Exception as e:
                 print(f"Failed to perform writeup: {e}")
                 return False
@@ -260,10 +270,9 @@ def do_idea(
             try:
                 paper_text = load_paper(f"{folder_name}/{idea['Name']}.pdf")
                 if model == "gpt-4o-2024-05-13":
-                    main_model = Model(model)
                     review = perform_review(
                         paper_text,
-                        model=main_model,
+                        model="gpt-4o-2024-05-13",
                         client=openai.OpenAI(),
                         num_reflections=5,
                         num_fs_examples=1,
@@ -275,9 +284,7 @@ def do_idea(
                     review = perform_review(
                         paper_text,
                         model=model.split("/")[-1],
-                        client=openai.OpenAI(
-                            api_key="ollama", base_url="http://localhost:11434/v1"
-                        ),
+                        client=openai.OpenAI(api_key="ollama", base_url=ollama_host),
                         num_reflections=5,
                         num_fs_examples=1,
                         num_reviews_ensemble=5,
@@ -300,12 +307,10 @@ def do_idea(
                     coder, folder_name, f"{folder_name}/{idea['Name']}_improved.pdf"
                 )
                 paper_text = load_paper(f"{folder_name}/{idea['Name']}_improved.pdf")
-
                 if model == "gpt-4o-2024-05-13":
-                    main_model = Model(model)
                     review = perform_review(
                         paper_text,
-                        model=main_model,
+                        model="gpt-4o-2024-05-13",
                         client=openai.OpenAI(),
                         num_reflections=5,
                         num_fs_examples=1,
@@ -317,9 +322,7 @@ def do_idea(
                     review = perform_review(
                         paper_text,
                         model=model.split("/")[-1],
-                        client=openai.OpenAI(
-                            api_key="ollama", base_url="http://localhost:11434/v1"
-                        ),
+                        client=openai.OpenAI(api_key="ollama", base_url=ollama_host),
                         num_reflections=5,
                         num_fs_examples=1,
                         num_reviews_ensemble=5,
@@ -356,6 +359,10 @@ if __name__ == "__main__":
 
     print(f"Using GPUs: {available_gpus}")
 
+    # Check LaTeX dependencies before proceeding
+    if args.writeup == "latex" and not check_latex_dependencies():
+        sys.exit(1)
+
     # Create client
     client, client_model = create_client(args.model)
 
@@ -369,12 +376,14 @@ if __name__ == "__main__":
         max_num_generations=args.num_ideas,
         num_reflections=NUM_REFLECTIONS,
     )
-    ideas = check_idea_novelty(
-        ideas,
-        base_dir=base_dir,
-        client=client,
-        model=client_model,
-    )
+    if not args.skip_novelty_check:
+        ideas = check_idea_novelty(
+            ideas,
+            base_dir=base_dir,
+            client=client,
+            model=client_model,
+            engine=args.engine,
+        )
 
     with open(osp.join(base_dir, "ideas.json"), "w") as f:
         json.dump(ideas, f, indent=4)
@@ -434,5 +443,7 @@ if __name__ == "__main__":
                 print(f"Completed idea: {idea['Name']}, Success: {success}")
             except Exception as e:
                 print(f"Failed to evaluate idea {idea['Name']}: {str(e)}")
+                import traceback
 
+                print(traceback.format_exc())
     print("All ideas evaluated.")
